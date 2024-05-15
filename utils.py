@@ -96,4 +96,15 @@ def validate_datetime(date, format, future = False, past = False):
     except ValueError:
         return False
 
+
+def validate_list(array, min_len = None, max_len = None, no_duplicates = False):
+    if isinstance(array, list):
+        if min_len is not None and len(array) < min_len:
+            return False
+        if max_len is not None and len(array) > max_len:
+            return False
+        if no_duplicates and len(set(array)) != len(array):
+            return False
+        return True
+    return False
     

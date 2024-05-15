@@ -38,6 +38,7 @@ CREATE TABLE assistente (
 CREATE TABLE especializacao (
 	id_espec	 SERIAL,
 	especializacao VARCHAR(512) NOT NULL,
+    id_medico INTEGER,
 	PRIMARY KEY(id_espec)
 );
 
@@ -144,11 +145,6 @@ CREATE TABLE especializacao_especializacao (
 	PRIMARY KEY(especializacao_id_espec)
 );
 
-CREATE TABLE medico_especializacao (
-	medico_trabalhadores_id_trab INTEGER,
-	especializacao_id_espec	 INTEGER,
-	PRIMARY KEY(medico_trabalhadores_id_trab,especializacao_id_espec)
-);
 
 ALTER TABLE pacientes ADD UNIQUE (username, email, password);
 ALTER TABLE trabalhadores ADD UNIQUE (username, email, password);
@@ -176,8 +172,17 @@ ALTER TABLE internamento_receita ADD CONSTRAINT internamento_receita_fk1 FOREIGN
 ALTER TABLE internamento_receita ADD CONSTRAINT internamento_receita_fk2 FOREIGN KEY (receita_id_receita) REFERENCES receita(id_receita);
 ALTER TABLE cirurgia_enfermeiro ADD CONSTRAINT cirurgia_enfermeiro_fk1 FOREIGN KEY (cirurgia_id_cirur) REFERENCES cirurgia(id_cirur);
 ALTER TABLE cirurgia_enfermeiro ADD CONSTRAINT cirurgia_enfermeiro_fk2 FOREIGN KEY (enfermeiro_trabalhadores_id_trab) REFERENCES enfermeiro(trabalhadores_id_trab);
+ALTER TABLE especializacao ADD CONSTRAINT especializacao_fk1 FOREIGN KEY (id_medico) REFERENCES medico(trabalhadores_id_trab);
 ALTER TABLE especializacao_especializacao ADD CONSTRAINT especializacao_especializacao_fk1 FOREIGN KEY (especializacao_id_espec) REFERENCES especializacao(id_espec);
 ALTER TABLE especializacao_especializacao ADD CONSTRAINT especializacao_especializacao_fk2 FOREIGN KEY (especializacao_id_espec1) REFERENCES especializacao(id_espec);
-ALTER TABLE medico_especializacao ADD CONSTRAINT medico_especializacao_fk1 FOREIGN KEY (medico_trabalhadores_id_trab) REFERENCES medico(trabalhadores_id_trab);
+/*ALTER TABLE medico_especializacao ADD CONSTRAINT medico_especializacao_fk1 FOREIGN KEY (medico_trabalhadores_id_trab) REFERENCES medico(trabalhadores_id_trab);
 ALTER TABLE medico_especializacao ADD CONSTRAINT medico_especializacao_fk2 FOREIGN KEY (especializacao_id_espec) REFERENCES especializacao(id_espec);
+*/
 
+/*
+CREATE TABLE medico_especializacao (
+	medico_trabalhadores_id_trab INTEGER,
+	especializacao_id_espec	 INTEGER,
+	PRIMARY KEY(medico_trabalhadores_id_trab,especializacao_id_espec)
+);
+*/
