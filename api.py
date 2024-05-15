@@ -274,6 +274,7 @@ def register_doctor():
 
 @app.route('/dbproj/user', methods=['POST'])
 def login():
+
     print('login')
     payload = flask.request.json
     required_fields = {'email', 'password'}
@@ -388,6 +389,214 @@ def login():
     finally:
         utils.db_close(conn, cursor)
 
+@app.route('/dbproj/surgery/<hospitalization_id>', methods=['POST'])
+#@app.route('/dbproj/surgery', methods=['POST'])
+def schedule_surgery(hospitalization_id=None):
+    print('schedule_surgery')
+    #receive the token from the header
+    token = flask.request.headers.get('Authorization')
+    
+
+    #remove the 'Bearer ' from the token
+    token = token.split(' ')[1] if token else None
+
+    
+    if not token:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Missing token')
+    try:
+        #decode the token
+        decoded = jwt.decode(token, key=os.environ.get("KEY"), algorithms='HS256')
+    except jwt.ExpiredSignatureError:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Expired token')
+    
+
+    #check if the user is a doctor
+    if decoded['type'] != 'assistant':
+        flask.abort(utils.StatusCodes['forbidden'], 'Forbidden')
+
+    assistant_id = decoded['id']
+
+    #verify the payload
+    payload = flask.request.json
+    required_fields = {'patient_id', 'doctor', 'nurses', 'date', 'time', 'enf_responsavel'}
+    utils.validate_payload(payload, required_fields)
+
+    patient_id = payload['patient_id']
+    doctor = payload['doctor']
+    nurses = payload['nurses']
+    date = payload['date']
+    time = payload['time']
+    enf_responsavel = payload['enf_responsavel']
+
+    if not utils.validate_int(patient_id, min_value=1, max_value=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid patient_id')
+    if not utils.validate_int(doctor, min_value=1,max_value=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor name')
+    if not utils.validate_list(nurses, min_len=1, max_len=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid nurses list')
+    if not utils.validate_datetime(date, '%Y-%m-%d'):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid date')
+    if not utils.validate_int(enf_responsavel, min_value=1, max_value=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid enf_responsavel')
+
+    if hospitalization_id:
+        '''
+        if not utils.validate_int(hospitalization_id, min_value=1, max_value=None):
+            flask.abort(utils.StatusCodes['bad_request'], 'Invalid hospitalization_id')
+        '''
+        #check if the hospitalization exists
+        conn, cursor = utils.db_connect()
+        statement = f"SELECT id_inter FROM internamento WHERE id_inter = '{hospitalization_id}'"
+
+        try:
+            cursor.execute(statement)
+            hospitalization = cursor.fetchone()
+
+            if not hospitalization:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['not_found'], 'Hospitalization not found')
+
+            
+            #create the surgery for the hospitalization
+            statement = 'INSERT INTO cirurgia (internamento_id_inter, medico_trabalhadores_id_trab) VALUES (%s, %s) RETURNING id_cirur'
+            values = (hospitalization_id, doctor)
+
+            try:
+                cursor.execute(statement, values)
+                conn.commit()
+                surgery_id = cursor.fetchone()[0]
+
+                print("SURGERY CREATED")
+
+                #add the nurses to the surgery
+                for nurse in nurses:
+                    statement = 'INSERT INTO cirurgia_enfermeiro (cirurgia_id_cirur, enfermeiro_trabalhadores_id_trab) VALUES (%s, %s)'
+                    values = (surgery_id, nurse[0])
+                    try:
+                        cursor.execute(statement, values)
+                        conn.commit()
+
+                        print("NURSE ADDED")
+                    except psycopg2.DatabaseError as e:
+                        print(e)
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+                    #update the bill for the hospitalization with the surgery cost
+                    statement = f"SELECT fatura_id_fatura FROM internamento WHERE id_inter = '{hospitalization_id}'"
+                    try:
+                        cursor.execute(statement)
+                        invoice_id = cursor.fetchone()[0]
+
+                        print(invoice_id)
+
+                        statement = f"UPDATE fatura SET valor_total = valor_total + 150 WHERE id_fatura = '{invoice_id}'"
+                        try:
+                            cursor.execute(statement)
+                            conn.commit()
+
+                            print('INVOICE UPDATED')
+
+                            response = {'results': f"Surgery scheduled for hospitalization {hospitalization_id}"}
+                            return flask.make_response(flask.jsonify(response), utils.StatusCodes['success']) 
+                        
+                        except psycopg2.DatabaseError as e:
+                            print(e)
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                    except psycopg2.DatabaseError as e:
+                        print(e)
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+            except psycopg2.DatabaseError as e:
+                print(e)
+                conn.rollback()
+                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+        except psycopg2.DatabaseError as e:
+            print(e)
+            conn.rollback()
+            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+        finally:
+            utils.db_close(conn, cursor)
+
+    elif not hospitalization_id:
+        #create new invoice
+        conn, cursor = utils.db_connect()
+        statement = 'INSERT INTO fatura (valor_total) VALUES (0) RETURNING id_fatura'
+
+        try:
+            cursor.execute(statement)
+            conn.commit()
+            invoice_id = cursor.fetchone()[0]
+        except psycopg2.DatabaseError as e:
+            print(e)
+            conn.rollback()
+            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+        finally:
+            utils.db_close(conn, cursor)
+
+        #create a new hospitalization
+        conn, cursor = utils.db_connect()
+
+        statement = 'INSERT INTO internamento (hora, dia, pacientes_id_pac, fatura_id_fatura, enfermeiro_trabalhadores_id_trab) VALUES (%s, %s, %s, %s, %s) RETURNING id_inter'
+        values = (time, date, patient_id, invoice_id, enf_responsavel)
+
+        try:
+            cursor.execute(statement, values)
+            conn.commit()
+            hospitalization_id = cursor.fetchone()[0]
+        except psycopg2.DatabaseError as e:
+            print(e)
+            conn.rollback()
+            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+        
+        #create the surgery for the hospitalization
+        statement = 'INSERT INTO cirurgia (internamento_id_inter, medico_trabalhadores_id_trab) VALUES (%s, %s) RETURNING id_cirur'
+        values = (hospitalization_id, doctor)
+
+        try:
+            cursor.execute(statement, values)
+            conn.commit()
+            surgery_id = cursor.fetchone()[0]
+
+            #add the nurses to the surgery
+            for nurse in nurses:
+                statement = 'INSERT INTO cirurgia_enfermeiro (cirurgia_id_cirur, enfermeiro_trabalhadores_id_trab) VALUES (%s, %s)'
+                values = (surgery_id, nurse[0])
+                try:
+                    cursor.execute(statement, values)
+                    conn.commit()
+                    
+                    #update the bill for the hospitalization with the surgery cost
+                    statement = f"UPDATE fatura SET valor_total = valor_total + 150 WHERE id_fatura = '{invoice_id}'"
+                    try:
+                        cursor.execute(statement)
+                        conn.commit()
+
+                        response = {'results': f"Surgery scheduled for hospitalization {hospitalization_id}"}
+                        return flask.make_response(flask.jsonify(response), utils.StatusCodes['success']) 
+                    except psycopg2.DatabaseError as e:
+                        print(e)
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+                except psycopg2.DatabaseError as e:
+                    print(e)
+                    conn.rollback()
+                    flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+        except psycopg2.DatabaseError as e:
+            print(e)
+            conn.rollback()
+            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+        finally:
+            utils.db_close(conn, cursor)
+
+
+
+    
+
+
+        
 
                 
 
