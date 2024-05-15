@@ -11,6 +11,8 @@ import utils
 app = flask.Flask(__name__)
 
 
+
+
 @app.route('/dbproj/register/patient', methods=['POST'])
 def register_patient():
     print('register_patient')
@@ -56,7 +58,6 @@ def register_patient():
     finally:
         utils.db_close(conn, cursor)
     return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
-
 
 @app.route('/dbproj/register/assistant', methods=['POST'])
 def register_assistant():
@@ -191,6 +192,205 @@ def register_nurse():
     finally:
         utils.db_close(conn, cursor)
     return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+
+@app.route('/dbproj/register/doctor', methods=['POST'])
+def register_doctor():
+    print('register_doctor')
+    payload = flask.request.json
+    required_fields = {'username', 'email', 'password', 'dur_contrato', 'salary', 'licenca', 'especializacao'}
+    utils.validate_payload(payload, required_fields)
+    name = payload['username']
+    email = payload['email']
+    password = payload['password']
+    dur_contrato = payload['dur_contrato']
+    salary = payload['salary']
+    licenca = payload['licenca']
+    especializacao= payload['especializacao']
+
+    if not utils.validate_string(name, min_len=1, max_len=100):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid name')
+    if not utils.validate_string(email, min_len=1, max_len=100):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid email')
+    if not utils.validate_string(password, min_len=1, max_len=100):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid password')
+    if not utils.validate_int(dur_contrato, min_value=1, max_value=100):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid dur_contrato')
+    if not utils.validate_int(salary, min_value=1, max_value=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid salary')
+    if not utils.validate_int(licenca, min_value=1, max_value=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid licence')
+    if not utils.validate_string(especializacao, min_len=1, max_len=100):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid especialidade')
+
+    
+
+    #verify password
+    if not utils.validate_password(password):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid password')
+    if not utils.validate_email(email):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid email')
+    
+    conn, cursor = utils.db_connect()
+
+    #statement to add a new doctor to the table Trabalhadores e Medico
+    statement1 = 'INSERT INTO trabalhadores (username, email, password, dur_contrato, salary) VALUES (%s, %s, %s, %s, %s) RETURNING id_trab'
+    values = (name, email, password, dur_contrato, salary)
+
+    try:
+        cursor.execute(statement1, values)
+        conn.commit()
+        doctor_id = cursor.fetchone()[0]
+        print(doctor_id)
+
+        statement2 = 'INSERT INTO medico (licenca, trabalhadores_id_trab) VALUES (%s, %s)'
+        values2 = (licenca, doctor_id)
+        try:
+            cursor.execute(statement2, values2)
+            conn.commit()
+
+            statement3 = 'INSERT INTO especializacao (especializacao, id_medico) VALUES (%s, %s)'
+            values3 = (especializacao, doctor_id)
+            try:
+                cursor.execute(statement3, values3)
+                conn.commit()
+                response = {'results': f"Doctor added with id {doctor_id}"}
+            except:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'Error adding doctor specialization')
+        except:
+            conn.rollback()
+            flask.abort(utils.StatusCodes['bad_request'], 'Error adding doctor')
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        flask.abort(utils.StatusCodes['bad_request'], 'Email already in use')
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    finally:
+        utils.db_close(conn, cursor)
+    return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+
+
+@app.route('/dbproj/user', methods=['POST'])
+def login():
+    print('login')
+    payload = flask.request.json
+    required_fields = {'email', 'password'}
+    utils.validate_payload(payload, required_fields)
+    email = payload['email']
+    password = payload['password']
+
+    if not utils.validate_string(email, min_len=1, max_len=100):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid email')
+    if not utils.validate_string(password, min_len=1, max_len=100):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid password')
+
+
+    if not utils.validate_email(email):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid email')
+    if not utils.validate_password(password):
+        flask.abort(utils.StatusCodes['unauthorized'], 'Wrong password')
+
+    try:
+        conn, cursor = utils.db_connect()
+
+        #need to check if the user is a patient, assistant, nurse or doctor
+        statement = f"SELECT id_pac, username, password FROM pacientes WHERE email LIKE '{email}'"
+        values = (email)
+        try:
+            cursor.execute(statement)
+            patient = cursor.fetchone()
+        except psycopg2.DatabaseError as e:
+            print(e)
+            conn.rollback()
+            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+        if patient:
+            if patient[2] == password:
+                #generate jwt token for patient with patient info
+                token = jwt.encode({'id': patient[0], 'name': patient[1], 'type': 'patient'}, key=os.environ.get("KEY"), algorithm='HS256')
+
+                response = {'results': f"Patient {patient[1]} logged in", 'token': token}
+                return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+            else:
+                flask.abort(utils.StatusCodes['bad_request'], 'Invalid password')
+        else:
+            statement = f"SELECT id_trab, username, password FROM trabalhadores WHERE email LIKE '{email}'"
+            values = (email)
+            try:
+                cursor.execute(statement)
+                worker = cursor.fetchone()
+            except psycopg2.DatabaseError as e:
+                print(e)
+                conn.rollback()
+                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+            if worker:
+                if worker[2] == password:
+                    #check if the worker is an assistant, nurse or doctor
+                    statement = f"SELECT seccao FROM assistente WHERE trabalhadores_id_trab = '{worker[0]}'"
+                    values = (worker[0])
+                    try:
+                        cursor.execute(statement)
+                        assistant = cursor.fetchone()
+                    except psycopg2.DatabaseError as e:
+                        print(e)
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                    if assistant:
+                        #generate jwt token for assistant with assistant info
+                        token = jwt.encode({'id': worker[0], 'name': worker[1], 'type': 'assistant', 'section': assistant[0]}, key=os.environ.get("KEY"), algorithm='HS256')
+
+                        response = {'results': f"Assistant {worker[1]} logged in", 'token': token}
+                        return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+                    else:
+                        statement = f"SELECT role, categoria FROM enfermeiro WHERE trabalhadores_id_trab = '{worker[0]}'"
+                        values = (worker[0])
+                        try:
+                            cursor.execute(statement)
+                            nurse = cursor.fetchone()
+                        except psycopg2.DatabaseError as e:
+                            print(e)
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                        if nurse:
+                            #generate jwt token for nurse with nurse info
+                            token = jwt.encode({'id': worker[0], 'name': worker[1], 'type': 'nurse', 'role': nurse[0], 'category': nurse[1]}, key=os.environ.get("KEY"), algorithm='HS256')
+
+                            response = {'results': f"Nurse {worker[1]} logged in", 'token': token}
+                            return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+                        else:
+                            statement = f"SELECT licenca FROM medico WHERE trabalhadores_id_trab = '{worker[0]}'"
+                            values = (worker[0])
+                            try:
+                                cursor.execute(statement)
+                                doctor = cursor.fetchone()
+                            except psycopg2.DatabaseError as e:
+                                print(e)
+                                conn.rollback()
+                                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                            if doctor:
+                                #generate jwt token for doctor with doctor info
+                                print(doctor)
+                                token = jwt.encode({'id': worker[0], 'name': worker[1], 'type': 'doctor', 'licence': doctor[0]}, key=os.environ.get("KEY") , algorithm='HS256')
+
+                                #add token to the response
+
+                                response = {'results': f"Doctor {worker[1]} logged in", 'token': token}
+                                return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+                            else:
+                                conn.rollback()
+                                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                else:
+                    flask.abort(utils.StatusCodes['bad_request'], 'Invalid password')
+            else:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'Invalid email')
+    finally:
+        utils.db_close(conn, cursor)
+
+
+                
+
 
 
 
