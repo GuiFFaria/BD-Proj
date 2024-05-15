@@ -392,6 +392,7 @@ def login():
 @app.route('/dbproj/surgery/<hospitalization_id>', methods=['POST'])
 #@app.route('/dbproj/surgery', methods=['POST'])
 def schedule_surgery(hospitalization_id=None):
+
     print('schedule_surgery')
     #receive the token from the header
     token = flask.request.headers.get('Authorization')
@@ -456,7 +457,20 @@ def schedule_surgery(hospitalization_id=None):
                 conn.rollback()
                 flask.abort(utils.StatusCodes['not_found'], 'Hospitalization not found')
 
-            
+            #check if the hospitalization is from the patient
+            statement = f"SELECT pacientes_id_pac FROM internamento WHERE id_inter = '{hospitalization_id}'"
+            try:
+                cursor.execute(statement)
+                patient = cursor.fetchone()
+
+                if not patient or patient[0] != patient_id:
+                    conn.rollback()
+                    flask.abort(utils.StatusCodes['forbidden'], 'This hospitalization is not from this patient')
+            except psycopg2.DatabaseError as e:
+                print(e)
+                conn.rollback()
+                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
             #create the surgery for the hospitalization
             statement = 'INSERT INTO cirurgia (internamento_id_inter, medico_trabalhadores_id_trab) VALUES (%s, %s) RETURNING id_cirur'
             values = (hospitalization_id, doctor)
@@ -592,7 +606,106 @@ def schedule_surgery(hospitalization_id=None):
             utils.db_close(conn, cursor)
 
 
+@app.route('/dbproj/bills/<bill_id>', methods=['POST'])
+def payment(bill_id):
+    print('payment')
+    #receive the token from the header
+    token = flask.request.headers.get('Authorization')
+    
 
+    #remove the 'Bearer ' from the token
+    token = token.split(' ')[1] if token else None
+
+    
+    if not token:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Missing token')
+    try:
+        #decode the token
+        decoded = jwt.decode(token, key=os.environ.get("KEY"), algorithms='HS256')
+    except jwt.ExpiredSignatureError:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Expired token')
+    
+
+    #check if the user is a patient
+    if decoded['type'] != 'patient':
+        flask.abort(utils.StatusCodes['forbidden'], 'Forbidden')
+
+    patient_id = decoded['id']
+
+    #verify payload
+    payload = flask.request.json
+    required_fields = {'amount'}
+    utils.validate_payload(payload, required_fields)
+    amount = payload['amount']
+    print(amount)
+
+    if not utils.validate_int(amount, min_value=1, max_value=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid amount')
+
+
+    #verify the bill_id
+    '''
+    if not utils.validate_int(bill_id, min_value=1, max_value=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid bill_id')
+        '''
+
+    conn, cursor = utils.db_connect()
+
+    #check if the bill exists
+    statement = f"SELECT id_fatura, valor_total FROM fatura WHERE id_fatura = '{bill_id}'"
+    try:
+        cursor.execute(statement)
+        bill = cursor.fetchone()
+
+        if not bill:
+            conn.rollback()
+            flask.abort(utils.StatusCodes['not_found'], 'Bill not found')
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+    #check if the patient is the owner of the bill
+    statement = f"SELECT pacientes_id_pac FROM internamento WHERE fatura_id_fatura = '{bill_id}'"
+    try:
+        cursor.execute(statement)
+        owner = cursor.fetchone()
+
+        if not owner or owner[0] != patient_id:
+            conn.rollback()
+            flask.abort(utils.StatusCodes['forbidden'], 'Your not the owner of this bill')
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+    #pay the bill
+    statement = f"UPDATE fatura SET valor_total = valor_total - '{amount}'  WHERE id_fatura = '{bill_id}' RETURNING valor_total"
+    #values = (amount, bill_id)
+    try:
+        cursor.execute(statement)
+        conn.commit()
+        remaining_bill = cursor.fetchone()[0]
+
+        #add the payment to the payments table
+        statement = 'INSERT INTO pagamento (valor_pago, fatura_id_fatura) VALUES (%s, %s)'
+        values = (amount, bill_id)
+        try:
+            cursor.execute(statement, values)
+            conn.commit()
+
+            response = {'results': f"Remaining amount: {remaining_bill}"}
+            return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+        except psycopg2.DatabaseError as e:
+            print(e)
+            conn.rollback()
+            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    finally:
+        utils.db_close(conn, cursor)
     
 
 
