@@ -175,6 +175,10 @@ ALTER TABLE cirurgia_enfermeiro ADD CONSTRAINT cirurgia_enfermeiro_fk2 FOREIGN K
 ALTER TABLE especializacao ADD CONSTRAINT especializacao_fk1 FOREIGN KEY (id_medico) REFERENCES medico(trabalhadores_id_trab);
 ALTER TABLE especializacao_especializacao ADD CONSTRAINT especializacao_especializacao_fk1 FOREIGN KEY (especializacao_id_espec) REFERENCES especializacao(id_espec);
 ALTER TABLE especializacao_especializacao ADD CONSTRAINT especializacao_especializacao_fk2 FOREIGN KEY (especializacao_id_espec1) REFERENCES especializacao(id_espec);
+
+
+
+
 /*ALTER TABLE medico_especializacao ADD CONSTRAINT medico_especializacao_fk1 FOREIGN KEY (medico_trabalhadores_id_trab) REFERENCES medico(trabalhadores_id_trab);
 ALTER TABLE medico_especializacao ADD CONSTRAINT medico_especializacao_fk2 FOREIGN KEY (especializacao_id_espec) REFERENCES especializacao(id_espec);
 */

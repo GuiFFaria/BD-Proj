@@ -11,10 +11,14 @@ import utils
 app = flask.Flask(__name__)
 
 
-
+######################################################
+######## Registar um paciente ########################
+######################################################
 
 @app.route('/dbproj/register/patient', methods=['POST'])
 def register_patient():
+
+
     print('register_patient')
     payload = flask.request.json
     required_fields = {'username', 'email', 'password'}
@@ -58,6 +62,10 @@ def register_patient():
     finally:
         utils.db_close(conn, cursor)
     return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+
+#####################################################
+######## Registar um assistente #####################
+#####################################################
 
 @app.route('/dbproj/register/assistant', methods=['POST'])
 def register_assistant():
@@ -124,6 +132,10 @@ def register_assistant():
         utils.db_close(conn, cursor)
     return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
 
+
+#####################################################
+######## Registar um enfermeiro #####################
+#####################################################
 @app.route('/dbproj/register/nurse', methods=['POST'])
 def register_nurse():
     print('register_nurse')
@@ -192,6 +204,11 @@ def register_nurse():
     finally:
         utils.db_close(conn, cursor)
     return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+
+
+#####################################################
+######## Registar um médico #########################
+#####################################################
 
 @app.route('/dbproj/register/doctor', methods=['POST'])
 def register_doctor():
@@ -271,6 +288,9 @@ def register_doctor():
         utils.db_close(conn, cursor)
     return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
 
+#####################################################
+################### LOGIN ###########################
+#####################################################
 
 @app.route('/dbproj/user', methods=['POST'])
 def login():
@@ -389,8 +409,12 @@ def login():
     finally:
         utils.db_close(conn, cursor)
 
-@app.route('/dbproj/surgery/<hospitalization_id>', methods=['POST'])
-#@app.route('/dbproj/surgery', methods=['POST'])
+
+#####################################################
+########### Marcar uma cirurgia #####################
+#####################################################
+#@app.route('/dbproj/surgery/<hospitalization_id>', methods=['POST'])
+@app.route('/dbproj/surgery', methods=['POST'])
 def schedule_surgery(hospitalization_id=None):
 
     print('schedule_surgery')
@@ -606,6 +630,9 @@ def schedule_surgery(hospitalization_id=None):
             utils.db_close(conn, cursor)
 
 
+#####################################################
+########## Efetuar um pagamento #####################
+#####################################################
 @app.route('/dbproj/bills/<bill_id>', methods=['POST'])
 def payment(bill_id):
     print('payment')
@@ -706,6 +733,159 @@ def payment(bill_id):
         flask.abort(utils.StatusCodes['internal_error'], 'Database error')
     finally:
         utils.db_close(conn, cursor)
+    
+@app.route('/dbproj/top3', methods=['GET'])
+def get_top3():
+    print('get_top3')
+
+    #get token
+    token = flask.request.headers.get('Authorization')
+
+    #remove the 'Bearer ' from the token
+    token = token.split(' ')[1] if token else None
+
+    if not token:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Missing token')
+    try:
+        #decode the token
+        decoded = jwt.decode(token, key=os.environ.get("KEY"), algorithms='HS256')
+    except jwt.ExpiredSignatureError:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Expired token')
+
+    #check if the user is an assistant
+    if decoded['type'] != 'assistant':
+        flask.abort(utils.StatusCodes['forbidden'], 'You must be an assistant to access this information')
+    
+    #I want to get the top 3 patients with the most money spent 
+    conn, cursor = utils.db_connect()
+    
+    statement = '''SELECT 
+                    p.id_pac,
+                    p.username,
+                    SUM(COALESCE(pg_cons.valor_pago, 0) + COALESCE(pg_int.valor_pago, 0)) AS total_gasto,
+                    c.id_cons AS procedimento_id_consulta,
+                    i.id_inter AS procedimento_id_internamento,
+                    c.medico_trabalhadores_id_trab AS medico_id_consulta,
+                    i.enfermeiro_trabalhadores_id_trab AS enfermeiro_resp_id_internamento,
+                    c.data AS data_consulta,
+                    i.dia AS data_internamento
+                FROM 
+                    pacientes p
+                LEFT JOIN 
+                    consulta c ON p.id_pac = c.pacientes_id_pac
+                LEFT JOIN 
+                    fatura f_cons ON c.fatura_id_fatura = f_cons.id_fatura
+                LEFT JOIN 
+                    pagamento pg_cons ON f_cons.id_fatura = pg_cons.fatura_id_fatura
+                LEFT JOIN 
+                    internamento i ON p.id_pac = i.pacientes_id_pac
+                LEFT JOIN 
+                    fatura f_int ON i.fatura_id_fatura = f_int.id_fatura
+                LEFT JOIN 
+                    pagamento pg_int ON f_int.id_fatura = pg_int.fatura_id_fatura
+                GROUP BY 
+                    p.id_pac, p.username, c.id_cons, i.id_inter, c.medico_trabalhadores_id_trab, i.enfermeiro_trabalhadores_id_trab, c.data, i.dia
+                ORDER BY 
+                    total_gasto DESC
+                LIMIT 3;
+
+'''
+    
+    try:
+        cursor.execute(statement)
+        patients = cursor.fetchall()
+        
+        #remove type Decimal from the results
+        patients = [dict(zip([column[0] for column in cursor.description], row)) for row in patients]
+        
+        #for every patient, for the field total_gasto, remove the type Decimal and use only the value
+        for patient in patients:
+            patient['total_gasto'] = float(patient['total_gasto'])
+        
+        print("========================Final======================================= ")
+        print(patients)
+
+        response = {'results': patients}
+        return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    finally:
+        utils.db_close(conn, cursor)
+
+@app.route('/dbproj/report', methods=['GET'])
+def get_monthly_report():
+    print('get_monthly_report')
+
+    #get token
+    token = flask.request.headers.get('Authorization')
+
+    #remove the 'Bearer ' from the token
+    token = token.split(' ')[1] if token else None
+
+    if not token:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Missing token')
+    try:
+        #decode the token
+        decoded = jwt.decode(token, key=os.environ.get("KEY"), algorithms='HS256')
+    except jwt.ExpiredSignatureError:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Expired token')
+
+    #check if the user is an assistant
+    if decoded['type'] != 'assistant':
+        flask.abort(utils.StatusCodes['forbidden'], 'You must be an assistant to access this information')
+    
+    #I want to get the monthly report
+    conn, cursor = utils.db_connect()
+    
+    #get the list of the doctors with more surgeries each month in the last 12 months
+    statement = '''SELECT 
+                    EXTRACT(MONTH FROM i.dia) AS mes,
+                    EXTRACT(YEAR FROM i.dia) AS ano,
+                    t.id_trab AS medico_id,
+                    t.username AS medico_nome,
+                    COUNT(c.id_cirur) AS total_cirurgias
+                FROM 
+                    cirurgia c
+                JOIN 
+                    internamento i ON c.internamento_id_inter = i.id_inter
+                JOIN 
+                    trabalhadores t ON c.medico_trabalhadores_id_trab = t.id_trab
+                WHERE 
+                    i.dia > NOW() - INTERVAL '1 year'
+                GROUP BY 
+                    EXTRACT(MONTH FROM i.dia), EXTRACT(YEAR FROM i.dia), t.id_trab, t.username
+                ORDER BY 
+                    EXTRACT(YEAR FROM i.dia), EXTRACT(MONTH FROM i.dia), total_cirurgias DESC
+                LIMIT 12;
+  
+                '''
+    
+    try:
+        cursor.execute(statement)
+        report = cursor.fetchall()
+
+        #remove type Decimal from the results
+        report = [dict(zip([column[0] for column in cursor.description], row)) for row in report]
+
+        #for every doctor, for the fields mes e ano, remove the type Decimal and use only the value
+        for doctor in report:
+            doctor['mes'] = int(doctor['mes'])
+            doctor['ano'] = int(doctor['ano'])
+        
+        print("========================Final======================================= ")
+        print(report)
+
+        response = {'results': report}
+        return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    finally:
+        utils.db_close(conn, cursor)
+
     
 
 
