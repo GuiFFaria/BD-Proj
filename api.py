@@ -515,6 +515,13 @@ def schedule_surgery(hospitalization_id=None):
                         conn.commit()
 
                         print("NURSE ADDED")
+
+                    except psycopg2.errors.UniqueViolation:
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['bad_request'], 'This surgery already exists')
+                    except psycopg2.errors.ForeignKeyViolation:
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor or nurse')
                     except psycopg2.DatabaseError as e:
                         print(e)
                         conn.rollback()
@@ -537,15 +544,32 @@ def schedule_surgery(hospitalization_id=None):
 
                             response = {'results': f"Surgery scheduled for hospitalization {hospitalization_id}"}
                             return flask.make_response(flask.jsonify(response), utils.StatusCodes['success']) 
-                        
+                        except psycopg2.errors.UniqueViolation:
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['bad_request'], 'This surgery already exists')
+                        except psycopg2.errors.ForeignKeyViolation:
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor or nurse')
                         except psycopg2.DatabaseError as e:
                             print(e)
                             conn.rollback()
                             flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                    except psycopg2.errors.UniqueViolation:
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['bad_request'], 'This surgery already exists')
+                    except psycopg2.errors.ForeignKeyViolation:
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor or nurse')
                     except psycopg2.DatabaseError as e:
                         print(e)
                         conn.rollback()
                         flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'This surgery already exists')
+            except psycopg2.errors.ForeignKeyViolation:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor or nurse')
             except psycopg2.DatabaseError as e:
                 print(e)
                 conn.rollback()
@@ -583,6 +607,13 @@ def schedule_surgery(hospitalization_id=None):
             cursor.execute(statement, values)
             conn.commit()
             hospitalization_id = cursor.fetchone()[0]
+
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            flask.abort(utils.StatusCodes['bad_request'], 'This hospitalization already exists')
+        except psycopg2.errors.ForeignKeyViolation:
+            conn.rollback()
+            flask.abort(utils.StatusCodes['bad_request'], 'Invalid patient or nurse')
         except psycopg2.DatabaseError as e:
             print(e)
             conn.rollback()
@@ -604,24 +635,40 @@ def schedule_surgery(hospitalization_id=None):
                 try:
                     cursor.execute(statement, values)
                     conn.commit()
-                    
-                    #update the bill for the hospitalization with the surgery cost
-                    statement = f"UPDATE fatura SET valor_total = valor_total + 150 WHERE id_fatura = '{invoice_id}'"
-                    try:
-                        cursor.execute(statement)
-                        conn.commit()
-
-                        response = {'results': f"Surgery scheduled for hospitalization {hospitalization_id}"}
-                        return flask.make_response(flask.jsonify(response), utils.StatusCodes['success']) 
-                    except psycopg2.DatabaseError as e:
-                        print(e)
-                        conn.rollback()
-                        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
-
+                except psycopg2.errors.UniqueViolation:
+                    conn.rollback()
+                    flask.abort(utils.StatusCodes['bad_request'], 'This surgery already exists')
+                except psycopg2.errors.ForeignKeyViolation:
+                    conn.rollback()
+                    flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor or nurse')
                 except psycopg2.DatabaseError as e:
                     print(e)
                     conn.rollback()
                     flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                    #update the bill for the hospitalization with the surgery cost
+            statement = f"UPDATE fatura SET valor_total = valor_total + 150 WHERE id_fatura = '{invoice_id}'"
+            try:
+                cursor.execute(statement)
+                conn.commit()
+
+                response = {'results': f"Surgery scheduled for hospitalization {hospitalization_id}"}
+                return flask.make_response(flask.jsonify(response), utils.StatusCodes['success']) 
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'This surgery already exists')
+            except psycopg2.errors.ForeignKeyViolation:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor or nurse')
+            except psycopg2.DatabaseError as e:
+                print(e)
+                conn.rollback()
+                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            flask.abort(utils.StatusCodes['bad_request'], 'This surgery already exists')
+        except psycopg2.errors.ForeignKeyViolation:
+            conn.rollback()
+            flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor or nurse')
         except psycopg2.DatabaseError as e:
             print(e)
             conn.rollback()
