@@ -780,7 +780,599 @@ def payment(bill_id):
         flask.abort(utils.StatusCodes['internal_error'], 'Database error')
     finally:
         utils.db_close(conn, cursor)
+
+#####################################################
+########## Agendar uma consulta #####################
+#####################################################
+@app.route('/dbproj/appointment', methods=['POST'])
+def schedule_appointment():
+    print('schedule_appointment')
+
+    #receive the token from the header
+    token = flask.request.headers.get('Authorization')
+
+    #remove the 'Bearer ' from the token
+    token = token.split(' ')[1] if token else None
+
+    if not token:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Missing token')
+    try:
+        #decode the token
+        decoded = jwt.decode(token, key=os.environ.get("KEY"), algorithms='HS256')
+    except jwt.ExpiredSignatureError:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Expired token')
+
+    #check if the user is a patient
+    if decoded['type'] != 'patient':
+        flask.abort(utils.StatusCodes['forbidden'], 'You must me a patient to schedule an appointment')
     
+    patient_id = decoded['id']
+
+    #verify the payload
+    payload = flask.request.json
+    required_fields = {'doctor', 'data', 'hora'}
+    utils.validate_payload(payload, required_fields)
+    doctor = payload['doctor']
+    data = payload['data']
+    hora = payload['hora']
+
+    if not utils.validate_int(doctor, min_value=1, max_value=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor')
+    if not utils.validate_datetime(data, '%Y-%m-%d'):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid date')
+    
+
+    conn, cursor = utils.db_connect()
+
+    # create the invoice for the appointment
+    statement = 'INSERT INTO fatura (valor_total) VALUES (0) RETURNING id_fatura'
+
+    try:
+        cursor.execute(statement)
+        conn.commit()
+        invoice_id = cursor.fetchone()[0]
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    
+    #create the appointment
+    statement = 'INSERT INTO consulta (data, hora, pacientes_id_pac, medico_trabalhadores_id_trab, fatura_id_fatura) VALUES (%s, %s, %s, %s, %s) RETURNING id_cons'
+    values = (data, hora, patient_id, doctor, invoice_id)
+
+    try:
+        cursor.execute(statement, values)
+        conn.commit()
+        appointment_id = cursor.fetchone()[0]
+
+        response = {'results': f"Appointment scheduled with id {appointment_id}"}
+
+        #update the bill for the appointment with the consultation cost
+        statement = f"UPDATE fatura SET valor_total = valor_total + 50 WHERE id_fatura = '{invoice_id}'"
+        try:
+            cursor.execute(statement)
+            conn.commit()
+        except psycopg2.DatabaseError as e:
+            print(e)
+            conn.rollback()
+            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+        return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        flask.abort(utils.StatusCodes['bad_request'], 'This appointment already exists')
+    except psycopg2.errors.ForeignKeyViolation:
+        conn.rollback()
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor')
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    finally:
+        utils.db_close(conn, cursor)
+    
+
+#####################################################
+########## Ver Consultas de um paciente #############
+#####################################################
+@app.route('/dbproj/appointments/<patient_id>', methods=['GET'])
+def get_appointments(patient_id):
+    print('get_appointments')
+
+    #receive the token from the header
+    token = flask.request.headers.get('Authorization')
+
+    #remove the 'Bearer ' from the token
+    token = token.split(' ')[1] if token else None
+
+    if not token:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Missing token')
+    try:
+        #decode the token
+        decoded = jwt.decode(token, key=os.environ.get("KEY"), algorithms='HS256')
+    except jwt.ExpiredSignatureError:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Expired token')
+
+    #check if the user is a assistant or the patient himself
+    print(decoded['type'], decoded['id'], patient_id)
+
+    if (decoded['type'] != 'assistant' and decoded['type'] != 'patient') and decoded['id'] != patient_id:
+        flask.abort(utils.StatusCodes['forbidden'], 'You must be an assistant or the patient to access this information')
+
+    conn, cursor = utils.db_connect()
+
+    #get the appointments of the patient, the doctor and the date
+    statement = '''SELECT 
+                    c.id_cons AS consulta_id,
+                    c.data AS data_consulta,
+                    c.hora AS hora_consulta,
+                    t.username AS medico_nome
+                FROM 
+                    consulta c
+                JOIN 
+                    trabalhadores t ON c.medico_trabalhadores_id_trab = t.id_trab
+                WHERE 
+                    c.pacientes_id_pac = %s
+                ORDER BY 
+                    c.data, c.hora;
+                '''
+    values = (patient_id)
+
+    try:
+        cursor.execute(statement, values)
+        appointments = cursor.fetchall()
+
+        #remove type Decimal from the results
+        appointments = [dict(zip([column[0] for column in cursor.description], row)) for row in appointments]
+
+        response = {'results': appointments}
+        return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    finally:
+        utils.db_close(conn, cursor)
+
+
+########################################################
+# Adicionar uma receita a uma consulta ou internamento #
+########################################################
+@app.route('/dbproj/prescription', methods=['POST'])
+def add_prescription():
+    print('add_prescription')
+
+    #receive the token from the header
+    token = flask.request.headers.get('Authorization')
+
+    #remove the 'Bearer ' from the token
+    token = token.split(' ')[1] if token else None
+
+    if not token:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Missing token')
+    try:
+        #decode the token
+        decoded = jwt.decode(token, key=os.environ.get("KEY"), algorithms='HS256')
+    except jwt.ExpiredSignatureError:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Expired token')
+
+    #check if the user is a doctor
+    if decoded['type'] != 'doctor':
+        flask.abort(utils.StatusCodes['forbidden'], 'You must be a doctor to add a prescription')
+
+    doctor_id = decoded['id']
+
+    #verify the payload
+    payload = flask.request.json
+    required_fields = {'type', 'event_id', 'validity', 'medicines'}
+    utils.validate_payload(payload, required_fields)
+
+    type = payload['type']
+    event_id = payload['event_id']
+    validity = payload['validity']
+    medicines = payload['medicines']
+
+    if not utils.validate_string(type, min_len=1, max_len=100):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid type')
+    if not utils.validate_int(event_id, min_value=1, max_value=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid event_id')
+    if not utils.validate_datetime(validity, '%Y-%m-%d'):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid validity')
+    if not utils.validate_list(medicines, min_len=1, max_len=None):
+        flask.abort(utils.StatusCodes['bad_request'], 'Invalid medicines list')
+
+    conn, cursor = utils.db_connect()
+
+    #check if the type is cirurgia or internamento
+    if type == 'consulta':
+        # create the prescription for the surgery
+        statement = f"INSERT INTO receita (validade) VALUES ('{validity}') RETURNING id_receita"
+        
+
+        try:
+            cursor.execute(statement)
+            conn.commit()
+            prescription_id = cursor.fetchone()[0]
+
+            print(prescription_id)
+
+            #add the prescription to the table receita_consulta
+            statement = 'INSERT INTO receita_consulta (receita_id_receita, consulta_id_cons) VALUES (%s, %s)'
+            values = (prescription_id, event_id)
+
+            try:
+                cursor.execute(statement, values)
+                conn.commit()
+
+                #add the medicines to the prescription
+                print("=======MEDICINES============\n")
+                print(medicines)
+                for medicine in medicines:
+
+                    statement = f"SELECT id_medicamento FROM medicamento WHERE nome LIKE '{medicine['medicine']}'"
+
+                    try:
+                        cursor.execute(statement)
+                        medicine_id = cursor.fetchone()
+                    except psycopg2.DatabaseError as e:
+                        print(e)
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                    
+                    if not medicine_id:
+                        statement = f"INSERT INTO medicamento (nome) VALUES ('{medicine['medicine']}') RETURNING id_medicamento"
+
+                        try:
+                            cursor.execute(statement)
+                            conn.commit()
+                            medicine_id = cursor.fetchone()
+                        except psycopg2.DatabaseError as e:
+                            print(e)
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+                    #add the secondary effects to the medicine
+                    for effect in medicine['effects']:
+                        statement = f"INSERT INTO efeito_secundario (descricao) VALUES ('{effect['descricao']}') RETURNING id_efeito"
+
+                        try:
+                            cursor.execute(statement)
+                            conn.commit()
+                            effect_id = cursor.fetchone()[0]
+
+                            #add the relation between the medicine and the secondary effects to the table carac_efeit_sec
+                            statement = 'INSERT INTO caract_efeit_sec (severity, probability, medicamento_id_medicamento, efeito_secundario_id_efeito) VALUES (%s, %s, %s, %s)'
+                            values = (effect['severity'], effect['probability'], medicine_id, effect_id)
+
+                            try:
+                                cursor.execute(statement, values)
+                                conn.commit()
+
+                            except psycopg2.errors.UniqueViolation:
+                                conn.rollback()
+                                flask.abort(utils.StatusCodes['bad_request'], 'This secondary effect already exists')
+                            except psycopg2.DatabaseError as e:
+                                print(e)
+                                conn.rollback()
+                                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                        except psycopg2.errors.UniqueViolation:
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['bad_request'], 'This secondary effect already exists')
+                        except psycopg2.DatabaseError as e:
+                            print(e)
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+                    #add the relation between the medicine and the prescription to the table dosagem
+                    statement = 'INSERT INTO dosagem (dosagem, receita_id_receita, medicamento_id_medicamento) VALUES (%s, %s, %s)'
+                    values = (medicine['dosagem'], prescription_id, medicine_id)
+
+                    try:
+                        cursor.execute(statement, values)
+                        conn.commit()
+                    except psycopg2.errors.UniqueViolation:
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['bad_request'], 'This medicine already exists')
+                    except psycopg2.DatabaseError as e:
+                        print(e)
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+                response = {'results': f"Prescription {prescription_id} added to appointment {event_id}"}
+
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'This prescription already exists')
+            except psycopg2.DatabaseError as e:
+                print(e)
+                conn.rollback()
+                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            flask.abort(utils.StatusCodes['bad_request'], 'This prescription already exists')
+        except psycopg2.DatabaseError as e:
+            print(e)
+            conn.rollback()
+            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+    elif type == 'internamento':
+        # create the prescription for the hospitalization
+        statement = f"INSERT INTO receita (validade) VALUES ('{validity}') RETURNING id_receita"
+
+        try:
+            cursor.execute(statement)
+            conn.commit()
+            prescription_id = cursor.fetchone()[0]
+
+            #add the prescription to the table receita_internamento
+            statement = 'INSERT INTO internamento_receita (receita_id_receita, internamento_id_inter) VALUES (%s, %s)'
+            values = (prescription_id, event_id)
+
+            try:
+                cursor.execute(statement, values)
+                conn.commit()
+
+                #add the medicines to the prescription
+                for medicine in medicines:
+
+                    #verify if the medicine already exists
+                    statement = f"SELECT id_medicamento FROM medicamento WHERE nome LIKE '{medicine['medicine']}'"
+
+                    try:
+                        cursor.execute(statement)
+                        medicine_id = cursor.fetchone()
+                    except psycopg2.DatabaseError as e:
+                        print(e)
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                       
+
+
+                    if not medicine_id:
+
+                        statement = f"INSERT INTO medicamento (nome) VALUES ('{medicine['medicine']}') RETURNING id_medicamento"
+
+                        try:
+
+                            cursor.execute(statement)
+                            conn.commit()
+                            medicine_id = cursor.fetchone()[0]
+                        
+                        except psycopg2.DatabaseError as e:
+                            print(e)
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+
+                    #add the secondary effects to the medicine
+                    for effect in medicine['effects']:
+                        statement = f"INSERT INTO efeito_secundario (descricao) VALUES ('{effect['descricao']}') RETURNING id_efeito"
+
+                        try:
+                            cursor.execute(statement)
+                            conn.commit()
+                            effect_id = cursor.fetchone()[0]
+
+                            #add the relation between the medicine and the secondary effects to the table carac_efeit_sec
+                            statement = 'INSERT INTO caract_efeit_sec (severity, probability, medicamento_id_medicamento, efeito_secundario_id_efeito) VALUES (%s, %s, %s, %s)'
+                            values = (effect['severity'], effect['probability'], medicine_id, effect_id)
+
+                            try:
+                                cursor.execute(statement, values)
+                                conn.commit()
+
+                            except psycopg2.errors.UniqueViolation:
+                                conn.rollback()
+                                flask.abort(utils.StatusCodes['bad_request'], 'This secondary effect already exists')
+                            except psycopg2.DatabaseError as e:
+                                print(e)
+                                conn.rollback()
+                                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+                        except psycopg2.errors.UniqueViolation:
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['bad_request'], 'This secondary effect already exists')
+                        except psycopg2.DatabaseError as e:
+                            print(e)
+                            conn.rollback()
+                            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+                    #add the relation between the medicine and the prescription to the table dosagem 
+                    statement = 'INSERT INTO dosagem (dosagem, receita_id_receita, medicamento_id_medicamento) VALUES (%s, %s, %s)'
+                    values = (medicine['dosagem'], prescription_id, medicine_id)
+
+                    try:
+                        cursor.execute(statement, values)
+                        conn.commit()
+                    except psycopg2.DatabaseError as e:
+                        print(e)
+                        conn.rollback()
+                        flask.abort(utils.StatusCodes['internal_error'], 'Database error AQUI')
+
+                response = {'results': f"Prescription '{prescription_id}' added to hospitalization '{event_id}'"}
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'This prescription already exists')
+            except psycopg2.DatabaseError as e:
+                print(e)
+                conn.rollback()
+                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            flask.abort(utils.StatusCodes['bad_request'], 'This prescription already exists')
+        except psycopg2.DatabaseError as e:
+            print(e)
+            conn.rollback()
+            flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+        finally:
+            utils.db_close(conn, cursor)
+
+    return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+
+
+#####################################################
+########## Ver Receitas de um paciente ##############
+#####################################################
+@app.route('/dbproj/prescriptions/<patient_id>', methods=['GET'])
+def get_prescriptions(patient_id):
+    print('get_prescriptions')
+
+    #receive the token from the header
+    token = flask.request.headers.get('Authorization')
+
+    #remove the 'Bearer ' from the token
+    token = token.split(' ')[1] if token else None
+
+    if not token:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Missing token')
+    try:
+        #decode the token
+        decoded = jwt.decode(token, key=os.environ.get("KEY"), algorithms='HS256')
+    except jwt.ExpiredSignatureError:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Expired token')
+
+    #check if the user is the patient himself
+    if decoded['id'] == patient_id and decoded['type'] != 'patient':
+        flask.abort(utils.StatusCodes['forbidden'], 'You must be the patient to access this information')
+
+    conn, cursor = utils.db_connect()
+
+    print(patient_id)
+    #get the prescriptions of the patient
+    statement = '''SELECT 
+                    r.id_receita AS receita_id,
+                    r.validade AS validade_receita,
+                    c.id_cons AS consulta_id,
+                    i.id_inter AS internamento_id,
+                    m.nome AS medicamento,
+                    d.dosagem AS dosagem,
+                    STRING_AGG(DISTINCT e.descricao, ', ') AS efeitos_secundarios,
+                    STRING_AGG(DISTINCT ce.severity::text, ', ') AS severidades,
+                    STRING_AGG(DISTINCT ce.probability::text, ', ') AS probabilidades
+                FROM 
+                    receita r
+                LEFT JOIN 
+                    dosagem d ON r.id_receita = d.receita_id_receita
+                LEFT JOIN 
+                    medicamento m ON d.medicamento_id_medicamento = m.id_medicamento
+                LEFT JOIN 
+                    caract_efeit_sec ce ON m.id_medicamento = ce.medicamento_id_medicamento
+                LEFT JOIN 
+                    efeito_secundario e ON ce.efeito_secundario_id_efeito = e.id_efeito
+                LEFT JOIN 
+                    receita_consulta rc ON r.id_receita = rc.receita_id_receita
+                LEFT JOIN 
+                    consulta c ON rc.consulta_id_cons = c.id_cons
+                LEFT JOIN 
+                    internamento_receita ir ON r.id_receita = ir.receita_id_receita
+                LEFT JOIN 
+                    internamento i ON ir.internamento_id_inter = i.id_inter
+                WHERE
+                    (c.pacientes_id_pac = %s OR i.pacientes_id_pac = %s)
+                GROUP BY
+                    r.id_receita, r.validade, c.id_cons, i.id_inter, m.nome, d.dosagem
+                ORDER BY
+                    r.validade;
+                '''
+    values = (patient_id, patient_id)
+
+    try:
+        cursor.execute(statement, values)
+        prescriptions = cursor.fetchall()
+
+        #remove type Decimal from the results
+        prescriptions = [dict(zip([column[0] for column in cursor.description], row)) for row in prescriptions]
+
+        response = {'results': prescriptions}
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    finally:
+        utils.db_close(conn, cursor)
+    
+    return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+        
+#####################################################
+############## Ver relatório diário #################
+#####################################################
+@app.route('/dbproj/daily/<date>', methods=['GET'])
+def get_daily_report(date):
+    print('get_daily_report')
+
+    #receive the token from the header
+    token = flask.request.headers.get('Authorization')
+
+    #remove the 'Bearer ' from the token
+    token = token.split(' ')[1] if token else None
+
+    if not token:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Missing token')
+    try:
+        #decode the token
+        decoded = jwt.decode(token, key=os.environ.get("KEY"), algorithms='HS256')
+    except jwt.ExpiredSignatureError:
+        flask.abort(utils.StatusCodes['unauthorized'], 'Expired token')
+
+    #check if the user is an assistant
+    if decoded['type'] != 'assistant':
+        flask.abort(utils.StatusCodes['forbidden'], 'You must be an assistant to access this information')
+
+    conn, cursor = utils.db_connect()
+
+    #get the daily report
+    statement = '''SELECT
+                    COUNT(DISTINCT s.id_cirur) AS surgeries,
+                    SUM(p.valor_pago) AS amount_spent,
+                    COUNT(DISTINCT r.id_receita) AS prescriptions
+                FROM 
+                    cirurgia s
+                LEFT JOIN
+                    internamento i ON s.internamento_id_inter = i.id_inter
+                LEFT JOIN
+                    fatura f ON i.fatura_id_fatura = f.id_fatura
+                LEFT JOIN
+                    pagamento p ON f.id_fatura = p.fatura_id_fatura
+                LEFT JOIN
+                    internamento_receita ir ON i.id_inter = ir.internamento_id_inter
+                LEFT JOIN
+                    receita r ON ir.receita_id_receita = r.id_receita
+                WHERE
+                    DATE_TRUNC('day', i.dia) = DATE_TRUNC('day', %s::date)
+                    OR DATE_TRUNC('day', r.validade) = DATE_TRUNC('day', %s::date);
+
+
+                '''
+    values = (date, date)
+
+    try:
+        cursor.execute(statement, values)
+        daily_report = cursor.fetchall()
+
+        #remove type Decimal from the results
+        daily_report = [dict(zip([column[0] for column in cursor.description], row)) for row in daily_report]
+
+        #in the daily report, for the field amount_spent, remove the type Decimal and use only the value
+        for report in daily_report:
+            report['amount_spent'] = float(report['amount_spent'])
+
+        print(daily_report)
+
+        response = {'results': daily_report}
+    except psycopg2.DatabaseError as e:
+        print(e)
+        conn.rollback()
+        flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+    finally:
+        utils.db_close(conn, cursor)
+    
+    return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
+
+
+#####################################################
+############## Ver top3 clientes ####################
+#####################################################
 @app.route('/dbproj/top3', methods=['GET'])
 def get_top3():
     print('get_top3')
@@ -861,6 +1453,10 @@ def get_top3():
     finally:
         utils.db_close(conn, cursor)
 
+
+#####################################################
+############## Ver relatório mensal #################
+#####################################################
 @app.route('/dbproj/report', methods=['GET'])
 def get_monthly_report():
     print('get_monthly_report')
