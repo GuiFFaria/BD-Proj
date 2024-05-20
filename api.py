@@ -810,11 +810,12 @@ def schedule_appointment():
 
     #verify the payload
     payload = flask.request.json
-    required_fields = {'doctor', 'data', 'hora'}
+    required_fields = {'doctor', 'data', 'hora', 'nurses'}
     utils.validate_payload(payload, required_fields)
     doctor = payload['doctor']
     data = payload['data']
     hora = payload['hora']
+    nurses = payload['nurses']
 
     if not utils.validate_int(doctor, min_value=1, max_value=None):
         flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor')
@@ -845,6 +846,24 @@ def schedule_appointment():
         conn.commit()
         appointment_id = cursor.fetchone()[0]
 
+        #add the nurses to the appointment
+        for nurse in nurses:
+            statement = 'INSERT INTO consulta_enfermeiro (consulta_id_cons, enfermeiro_trabalhadores_id_trab) VALUES (%s, %s)'
+            values = (appointment_id, nurse[0])
+            try:
+                cursor.execute(statement, values)
+                conn.commit()
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'This appointment already exists')
+            except psycopg2.errors.ForeignKeyViolation:
+                conn.rollback()
+                flask.abort(utils.StatusCodes['bad_request'], 'Invalid doctor or nurse')
+            except psycopg2.DatabaseError as e:
+                print(e)
+                conn.rollback()
+                flask.abort(utils.StatusCodes['internal_error'], 'Database error')
+
         response = {'results': f"Appointment scheduled with id {appointment_id}"}
 
         #update the bill for the appointment with the consultation cost
@@ -857,7 +876,6 @@ def schedule_appointment():
             conn.rollback()
             flask.abort(utils.StatusCodes['internal_error'], 'Database error')
 
-        return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
         flask.abort(utils.StatusCodes['bad_request'], 'This appointment already exists')
@@ -870,6 +888,8 @@ def schedule_appointment():
         flask.abort(utils.StatusCodes['internal_error'], 'Database error')
     finally:
         utils.db_close(conn, cursor)
+
+    return flask.make_response(flask.jsonify(response), utils.StatusCodes['success'])
     
 
 #####################################################
